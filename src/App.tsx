@@ -118,6 +118,8 @@ export default function App() {
 
   const handleSignOut = async () => {
     try {
+      if (transcriptIdsRef.current) transcriptIdsRef.current.clear();
+      setTranscripts([]);
       await signOut(auth);
     } catch (error) {
       console.error("Sign out failed", error);
@@ -235,12 +237,18 @@ export default function App() {
     const roomParam = params.get('room');
     if (roomParam) {
       setRoomId(roomParam);
+      // Clear local history when joining a room
+      setTranscripts([]);
+      if (transcriptIdsRef.current) transcriptIdsRef.current.clear();
     }
   }, []);
 
   // Real-time Message Listener
   useEffect(() => {
     if (!roomId) return;
+
+    // Use a session start time to avoid auto-speaking old messages from the channel
+    const sessionJoinTime = Date.now();
 
     const msgPath = `rooms/${roomId}/messages`;
     const q = query(collection(db, msgPath), orderBy('timestamp', 'asc'), limit(50));
@@ -254,8 +262,8 @@ export default function App() {
             transcriptIdsRef.current.add(change.doc.id);
             newTranscripts.push({ ...data, id: change.doc.id });
             
-            // Auto-speak if it's from the other person
-            if (autoSpeak && data.speakerId !== user?.uid) {
+            // Auto-speak ONLY if it's from the other person AND it's a new message in this session
+            if (autoSpeak && data.speakerId !== user?.uid && data.timestamp > sessionJoinTime) {
               speakText(data.translated, data.targetLang);
             }
           }
@@ -376,6 +384,9 @@ export default function App() {
       streamRef.current = stream;
       
       const audioContext = new AudioContext();
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
       const analyser = audioContext.createAnalyser();
       const source = audioContext.createMediaStreamSource(stream);
       source.connect(analyser);
