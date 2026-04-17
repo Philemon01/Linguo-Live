@@ -4,14 +4,28 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export async function translateText(
   text: string,
-  sourceLang: string,
-  targetLang: string,
+  sourceLangName: string,
+  targetLangName: string,
   retries = 2
 ): Promise<string> {
   try {
+    const isAuto = sourceLangName === 'Auto Detect';
+    
+    // Intelligent prompt for language detection and routing
+    const prompt = isAuto 
+      ? `You are a universal translator. 
+         Task:
+         1. Detect the language of the source text.
+         2. If it is NOT ${targetLangName}, translate it to ${targetLangName}.
+         3. If it matches ${targetLangName}, translate it to English (or if English, to Spanish).
+         4. Output in this EXACT format: "[Detected: {DetectedLanguage}] (For {TargetUserLanguage} speaker): {Translation}"
+         
+         Source text: "${text}"`
+      : `Direct ${sourceLangName} to ${targetLangName} translation. NO fluff or preamble: "${text}"`;
+
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: `Direct ${sourceLang} to ${targetLang} translation. NO fluff or preamble: "${text}"`
+      contents: prompt
     });
 
     return response.text?.trim() || "Translation failed.";
@@ -20,7 +34,7 @@ export async function translateText(
       console.warn(`Translation failed, retrying... (${retries} attempts left)`);
       // Short delay before retry
       await new Promise(resolve => setTimeout(resolve, 500));
-      return translateText(text, sourceLang, targetLang, retries - 1);
+      return translateText(text, sourceLangName, targetLangName, retries - 1);
     }
     throw error;
   }

@@ -25,7 +25,8 @@ import {
   Copy,
   Check,
   Menu,
-  X
+  X,
+  Send
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { translateText } from './services/translationService';
@@ -51,6 +52,7 @@ import { onAuthStateChanged, User, signOut } from 'firebase/auth';
 // -- Constants --
 
 const LANGUAGES = [
+  { code: 'auto', name: 'Auto Detect', flag: '✨' },
   { code: 'en-US', name: 'English', flag: '🇺🇸' },
   { code: 'es-ES', name: 'Spanish', flag: '🇪🇸' },
   { code: 'fr-FR', name: 'French', flag: '🇫🇷' },
@@ -95,6 +97,8 @@ export default function App() {
   const [copiedLink, setCopiedLink] = useState(false);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+  const [manualText, setManualText] = useState('');
 
   // Refs for Speech Recognition and Audio Core
   const recognitionRef = useRef<any>(null);
@@ -109,10 +113,20 @@ export default function App() {
   // -- Actions --
 
   const handleSignIn = async () => {
+    if (isAuthLoading) return;
+    setIsAuthLoading(true);
     try {
       await signInWithPopup(auth, googleProvider);
-    } catch (error) {
-      console.error("Sign in failed", error);
+      setStatusMessage('Signed in');
+    } catch (error: any) {
+      if (error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request') {
+        setStatusMessage('Sign in cancelled');
+      } else {
+        console.error("Sign in failed", error);
+        setStatusMessage('Authentication error');
+      }
+    } finally {
+      setIsAuthLoading(false);
     }
   };
 
@@ -131,7 +145,7 @@ export default function App() {
       handleSignIn();
       return;
     }
-    const newRoomId = Math.random().toString(36).substr(2, 9);
+    const newRoomId = Math.random().toString(36).slice(2, 11);
     const roomPath = `rooms/${newRoomId}`;
     try {
       await setDoc(doc(db, roomPath), {
@@ -187,8 +201,14 @@ export default function App() {
     try {
       const translated = await translateText(text, fromLang.name, toLang.name);
       
+      // Extract translation for speaking (remove AI metadata if multi-lang detected)
+      let spokenText = translated;
+      if (translated.includes('): ')) {
+        spokenText = translated.split('): ').slice(1).join('): ');
+      }
+
       const newItem: TranscriptItem = {
-        id: Math.random().toString(36).substr(2, 9),
+        id: Math.random().toString(36).slice(2, 11),
         original: text,
         translated: translated,
         timestamp: Date.now(),
@@ -209,7 +229,7 @@ export default function App() {
         }
       } else {
         // Local only mode
-        if (autoSpeak) speakText(translated, toLang.code);
+        if (autoSpeak) speakText(spokenText, toLang.code);
         setTranscripts(prev => [...prev, newItem]);
       }
       
@@ -255,16 +275,22 @@ export default function App() {
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const newTranscripts: TranscriptItem[] = [];
-      snapshot.docChanges().forEach((change) => {
+            snapshot.docChanges().forEach((change) => {
         if (change.type === "added") {
           const data = change.doc.data() as TranscriptItem & { speakerId: string };
           if (!transcriptIdsRef.current.has(change.doc.id)) {
             transcriptIdsRef.current.add(change.doc.id);
             newTranscripts.push({ ...data, id: change.doc.id });
             
+            // Clean AI metadata for speech
+            let spokenText = data.translated;
+            if (data.translated.includes('): ')) {
+              spokenText = data.translated.split('): ').slice(1).join('): ');
+            }
+
             // Auto-speak ONLY if it's from the other person AND it's a new message in this session
             if (autoSpeak && data.speakerId !== user?.uid && data.timestamp > sessionJoinTime) {
-              speakText(data.translated, data.targetLang);
+              speakText(spokenText, data.targetLang);
             }
           }
         }
@@ -313,7 +339,13 @@ export default function App() {
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true; // Use interim results to catch pending speech
-    recognition.lang = mode === 'me' ? sourceLang.code : targetLang.code;
+    
+    // Use target language if source is Auto Detect for listening (better than nothing)
+    // although Web Speech doesn't support 'auto' well, so we default to source if specific
+    recognition.lang = mode === 'me' 
+      ? (sourceLang.code === 'auto' ? 'en-US' : sourceLang.code) 
+      : targetLang.code;
+    
     recognitionRef.current = recognition;
     accumulatedTranscriptRef.current = '';
     let lastFinalTranscript = '';
@@ -349,10 +381,25 @@ export default function App() {
 
     recognition.onerror = (event: any) => {
       if (event.error === 'no-speech') return;
+      
       console.error('Recognition error', event.error);
       stopListening();
       setIsListening(null);
-      setStatusMessage(`Error: ${event.error}`);
+      
+      if (event.error === 'network') {
+        setStatusMessage('Network timeout. Retrying...');
+        // Small delay and retry if it was a network glitch while we're active
+        setTimeout(() => {
+          if (!isListeningRef.current) return;
+          try {
+            recognitionRef.current?.start();
+          } catch (e) {
+            setStatusMessage('Connection lost');
+          }
+        }, 1000);
+      } else {
+        setStatusMessage(`Error: ${event.error}`);
+      }
     };
 
     recognition.onend = () => {
@@ -425,6 +472,13 @@ export default function App() {
   const clearHistory = () => {
     setTranscripts([]);
     setStatusMessage('Cleared');
+  };
+
+  const handleManualSend = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualText.trim()) return;
+    handleConversation(manualText, 'me');
+    setManualText('');
   };
 
   const switchLanguages = () => {
@@ -648,6 +702,16 @@ export default function App() {
             <AnimatePresence initial={false}>
               {transcripts.map((item) => {
                 const isMe = item.speakerId === user?.uid || (item.sourceLang === sourceLang.code && !roomId);
+                
+                // Parse AI Metadata if present
+                let displayTranslation = item.translated;
+                let detectedInfo = null;
+                if (item.translated.includes('): ')) {
+                  const parts = item.translated.split('): ');
+                  detectedInfo = parts[0].replace(/\[|\]/g, '').trim();
+                  displayTranslation = parts.slice(1).join('): ');
+                }
+
                 return (
                   <motion.div
                     key={item.id}
@@ -664,14 +728,21 @@ export default function App() {
                         <span className={isMe ? 'text-emerald-400' : 'text-orange-400'}>
                           {LANGUAGES.find(l => l.code === item.sourceLang)?.name} → {LANGUAGES.find(l => l.code === item.targetLang)?.name}
                         </span>
-                        <button onClick={() => speakText(item.translated, item.targetLang)} className="opacity-30 hover:opacity-100 transition-opacity p-1">
+                        
+                        {detectedInfo && (
+                          <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[8px] text-white/40">
+                            {detectedInfo}
+                          </span>
+                        )}
+
+                        <button onClick={() => speakText(displayTranslation, item.targetLang)} className="opacity-30 hover:opacity-100 transition-opacity p-1">
                           <Volume2 className="w-3 h-3 md:w-4 md:h-4" />
                         </button>
                       </div>
                       <p className="text-sm md:text-[16px] leading-relaxed mb-4 text-white/70">{item.original}</p>
                       <div className="border-t border-white/5 pt-4">
                         <p className="text-base md:text-lg text-white font-medium leading-relaxed tracking-tight">
-                          {item.translated}
+                          {displayTranslation}
                         </p>
                       </div>
                     </div>
@@ -705,6 +776,26 @@ export default function App() {
                 Capturing audio sequence...
               </motion.div>
             )}
+          </div>
+
+          {/* MANUAL TEXT INPUT */}
+          <div className="z-20 mb-4 px-2">
+            <form onSubmit={handleManualSend} className="relative group">
+              <input 
+                type="text"
+                value={manualText}
+                onChange={(e) => setManualText(e.target.value)}
+                placeholder={`Type or paste ${sourceLang.name}...`}
+                className="w-full bg-white/5 border border-white/10 rounded-2xl py-3.5 pl-5 pr-14 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-emerald-500/30 transition-all backdrop-blur-md"
+              />
+              <button 
+                type="submit"
+                disabled={!manualText.trim()}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-xl bg-emerald-500/10 text-emerald-400 opacity-0 group-focus-within:opacity-100 disabled:opacity-0 transition-opacity hover:bg-emerald-500 hover:text-white"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </form>
           </div>
 
           {/* DUAL BIDIRECTIONAL CONTROLS */}
