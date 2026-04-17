@@ -1,0 +1,59 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+        (request.auth.token.email == "philemonprogress@gmail.com" && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isValidRoom(data) {
+      return data.keys().hasAll(['createdAt', 'createdBy']) &&
+             data.createdAt is string &&
+             data.createdBy is string &&
+             data.createdBy.size() < 128;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['original', 'translated', 'timestamp', 'sourceLang', 'targetLang', 'speakerId']) &&
+             data.original is string && data.original.size() < 5000 &&
+             data.translated is string && data.translated.size() < 5000 &&
+             data.timestamp is int &&
+             data.sourceLang is string && data.sourceLang.size() < 10 &&
+             data.targetLang is string && data.targetLang.size() < 10 &&
+             data.speakerId is string && data.speakerId.size() < 128;
+    }
+
+    // ===============================================================
+    // Match Rules
+    // ===============================================================
+
+    match /rooms/{roomId} {
+      allow read: if true; // Publicly readable via link
+      allow create: if isAuthenticated() && isValidRoom(request.resource.data);
+      allow update, delete: if isAdmin() || (isAuthenticated() && resource.data.createdBy == request.auth.uid);
+
+      match /messages/{messageId} {
+        allow read: if true; // Anyone with the link can read messages
+        allow create: if isAuthenticated() && isValidMessage(request.resource.data);
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAuthenticated() && (request.auth.uid == userId || isAdmin()) && 
+                    (!('role' in request.resource.data) || isAdmin());
+    }
+  }
+}

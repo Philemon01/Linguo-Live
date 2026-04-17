@@ -1,0 +1,39 @@
+{
+  "entities": {
+    "Room": {
+      "title": "Room",
+      "description": "A collaborative translation session",
+      "type": "object",
+      "properties": {
+        "createdAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string" },
+        "name": { "type": "string" }
+      },
+      "required": ["createdAt", "createdBy"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A single translated transcript item",
+      "type": "object",
+      "properties": {
+        "original": { "type": "string" },
+        "translated": { "type": "string" },
+        "timestamp": { "type": "integer" },
+        "sourceLang": { "type": "string" },
+        "targetLang": { "type": "string" },
+        "speakerId": { "type": "string" }
+      },
+      "required": ["original", "translated", "timestamp", "sourceLang", "targetLang", "speakerId"]
+    }
+  },
+  "firestore": {
+    "/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "Main room document"
+    },
+    "/rooms/{roomId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Messages within a room"
+    }
+  }
+}

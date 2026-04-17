@@ -1,0 +1,6 @@
+{
+  "name": "LinguoLive",
+  "description": "Real-time multilingual translator with speech-to-text and text-to-speech for seamless conversations.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": []
+}
