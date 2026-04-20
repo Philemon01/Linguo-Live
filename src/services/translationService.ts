@@ -1,6 +1,17 @@
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let aiInstance: GoogleGenAI | null = null;
+
+function getAI() {
+  if (!aiInstance) {
+    const apiKey = typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : undefined;
+    if (!apiKey) {
+      console.warn("GEMINI_API_KEY is not defined in the environment.");
+    }
+    aiInstance = new GoogleGenAI({ apiKey: apiKey || "" });
+  }
+  return aiInstance;
+}
 
 export async function translateText(
   text: string,
@@ -9,6 +20,7 @@ export async function translateText(
   retries = 2
 ): Promise<string> {
   try {
+    const ai = getAI();
     const isAuto = sourceLangName === 'Auto Detect';
     
     // Intelligent prompt for language detection and routing
