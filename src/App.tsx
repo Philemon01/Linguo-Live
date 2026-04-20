@@ -68,6 +68,7 @@ interface TranscriptItem {
   sourceLang: string;
   targetLang: string;
   speakerId?: string;
+  detectedLang?: string;
 }
 
 // -- Main Component --
@@ -220,13 +221,9 @@ export default function App() {
     const toLang = mode === 'me' ? targetLang : sourceLang;
 
     try {
-      const translated = await translateText(text, fromLang.name, toLang.name);
-      
-      // Extract translation for speaking (remove AI metadata if multi-lang detected)
-      let spokenText = translated;
-      if (translated.includes('): ')) {
-        spokenText = translated.split('): ').slice(1).join('): ');
-      }
+      const result = await translateText(text, fromLang.name, toLang.name);
+      const translated = result.translatedText;
+      const detectedLang = result.detectedLanguage;
 
       const newItem: TranscriptItem = {
         id: Math.random().toString(36).slice(2, 11),
@@ -235,6 +232,7 @@ export default function App() {
         timestamp: Date.now(),
         sourceLang: fromLang.code,
         targetLang: toLang.code,
+        detectedLang: detectedLang,
       };
 
       // If in a room, push to Firebase
@@ -250,14 +248,14 @@ export default function App() {
         }
       } else {
         // Local only mode
-        if (autoSpeak) speakText(spokenText, toLang.code);
+        if (autoSpeak) speakText(translated, toLang.code);
         setTranscripts(prev => [...prev, newItem]);
       }
       
       setStatusMessage('Ready');
     } catch (err) {
       console.error('Translation error', err);
-      setStatusMessage('Error');
+      setStatusMessage('Translation failed');
     } finally {
       setIsTranslating(false);
     }
@@ -303,15 +301,9 @@ export default function App() {
             transcriptIdsRef.current.add(change.doc.id);
             newTranscripts.push({ ...data, id: change.doc.id });
             
-            // Clean AI metadata for speech
-            let spokenText = data.translated;
-            if (data.translated.includes('): ')) {
-              spokenText = data.translated.split('): ').slice(1).join('): ');
-            }
-
             // Auto-speak ONLY if it's from the other person AND it's a new message in this session
             if (autoSpeak && data.speakerId !== user?.uid && data.timestamp > sessionJoinTime) {
-              speakText(spokenText, data.targetLang);
+              speakText(data.translated, data.targetLang);
             }
           }
         }
@@ -403,34 +395,36 @@ export default function App() {
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
       if (event.error === 'no-speech') return;
       
-      console.error('Recognition error', event.error);
-      stopListening();
-      setIsListening(null);
+      console.error('Recognition error:', event.error);
       
       if (event.error === 'network') {
-        setStatusMessage('Network timeout. Retrying...');
-        // Small delay and retry if it was a network glitch while we're active
-        setTimeout(() => {
-          if (!isListeningRef.current) return;
-          try {
-            recognitionRef.current?.start();
-          } catch (e) {
-            setStatusMessage('Connection lost');
-          }
-        }, 1000);
+        setStatusMessage('Connection lost. Retrying...');
       } else {
-        setStatusMessage(`Error: ${event.error}`);
+        setStatusMessage(`Mic error: ${event.error}`);
+        // For other errors, we should stop to avoid infinite loops
+        isListeningRef.current = null;
+        setIsListening(null);
+        stopListening();
       }
     };
 
     recognition.onend = () => {
-      // Auto-restart if we timed out from silence but user didn't stop
+      // If we are still supposed to be listening (e.g. timeout or network glitch)
       if (isListeningRef.current) {
+        console.log('Recognition ended while active, restarting...');
         try {
-          recognitionRef.current.start();
+          // Add a small delay to avoid rapid-fire restarts
+          setTimeout(() => {
+            if (isListeningRef.current && recognitionRef.current) {
+              recognitionRef.current.start();
+            }
+          }, 300);
           return;
         } catch (e) {
-          console.error('Auto-restart failed', e);
+          console.error('Auto-restart failed:', e);
+          setStatusMessage('Mic connection lost');
+          setIsListening(null);
+          isListeningRef.current = null;
         }
       }
 
@@ -529,7 +523,7 @@ export default function App() {
         <div className="md:hidden flex items-center justify-between p-4 border-b border-white/5 bg-black/20 z-40">
            <div className="flex items-center gap-3 font-bold text-lg tracking-tight">
             <div className="w-2.5 h-2.5 bg-emerald-400 rounded-full shadow-[0_0_10px_#4ade80]" />
-            LinguaFuse
+            LinguoLive
           </div>
           <button 
             onClick={() => setShowSidebar(!showSidebar)}
@@ -551,7 +545,7 @@ export default function App() {
             >
               <div className="hidden md:flex items-center gap-3 font-bold text-xl tracking-tight">
                 <div className="w-3 h-3 bg-emerald-400 rounded-full shadow-[0_0_10px_#4ade80]" />
-                LinguaFuse Live
+                LinguoLive
               </div>
 
               <div className="space-y-6">
@@ -724,15 +718,6 @@ export default function App() {
               {transcripts.map((item) => {
                 const isMe = item.speakerId === user?.uid || (item.sourceLang === sourceLang.code && !roomId);
                 
-                // Parse AI Metadata if present
-                let displayTranslation = item.translated;
-                let detectedInfo = null;
-                if (item.translated.includes('): ')) {
-                  const parts = item.translated.split('): ');
-                  detectedInfo = parts[0].replace(/\[|\]/g, '').trim();
-                  displayTranslation = parts.slice(1).join('): ');
-                }
-
                 return (
                   <motion.div
                     key={item.id}
@@ -750,20 +735,20 @@ export default function App() {
                           {LANGUAGES.find(l => l.code === item.sourceLang)?.name} → {LANGUAGES.find(l => l.code === item.targetLang)?.name}
                         </span>
                         
-                        {detectedInfo && (
+                        {item.detectedLang && (
                           <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[8px] text-white/40">
-                            {detectedInfo}
+                            {item.detectedLang}
                           </span>
                         )}
 
-                        <button onClick={() => speakText(displayTranslation, item.targetLang)} className="opacity-30 hover:opacity-100 transition-opacity p-1">
+                        <button onClick={() => speakText(item.translated, item.targetLang)} className="opacity-30 hover:opacity-100 transition-opacity p-1">
                           <Volume2 className="w-3 h-3 md:w-4 md:h-4" />
                         </button>
                       </div>
                       <p className="text-sm md:text-[16px] leading-relaxed mb-4 text-white/70">{item.original}</p>
                       <div className="border-t border-white/5 pt-4">
                         <p className="text-base md:text-lg text-white font-medium leading-relaxed tracking-tight">
-                          {displayTranslation}
+                          {item.translated}
                         </p>
                       </div>
                     </div>
