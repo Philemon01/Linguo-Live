@@ -74,6 +74,27 @@ interface TranscriptItem {
 
 // -- Utils --
 
+// Types for Web Speech API (not fully in standard lib)
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+  resultIndex: number;
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  error: string;
+}
+
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start: () => void;
+  stop: () => void;
+  onresult: (event: SpeechRecognitionEvent) => void;
+  onerror: (event: SpeechRecognitionErrorEvent) => void;
+  onend: () => void;
+}
+
 // Pre-load voices for faster start
 let cachedVoices: SpeechSynthesisVoice[] = [];
 if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
@@ -101,7 +122,7 @@ export default function App() {
   const [manualText, setManualText] = useState('');
 
   // Refs for Speech Recognition and Audio Core
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
@@ -336,7 +357,7 @@ export default function App() {
     }
 
     // 1. Setup Speech Recognition
-    const recognition = new SpeechRecognition();
+    const recognition = new SpeechRecognition() as SpeechRecognition;
     recognition.continuous = true;
     recognition.interimResults = true; // Use interim results to catch pending speech
     
@@ -350,7 +371,7 @@ export default function App() {
     accumulatedTranscriptRef.current = '';
     let lastFinalTranscript = '';
 
-    recognition.onresult = (event: any) => {
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
       let currentFinal = '';
       let currentInterim = '';
 
@@ -379,7 +400,7 @@ export default function App() {
       accumulatedTranscriptRef.current = totalSession;
     };
 
-    recognition.onerror = (event: any) => {
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
       if (event.error === 'no-speech') return;
       
       console.error('Recognition error', event.error);
